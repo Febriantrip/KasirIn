@@ -1,0 +1,56 @@
+name: Bootstrap and deploy KasirIn
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap-build-deploy:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore project source
+        shell: bash
+        run: |
+          cat .bootstrap2/part*.b64 | base64 --decode > /tmp/kasirin.tar.xz
+          tar -xJf /tmp/kasirin.tar.xz -C .
+          rm -rf .bootstrap .bootstrap2
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: publish KasirIn source" || true
+          git push origin main
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish gh-pages branch
+        shell: bash
+        run: |
+          mkdir -p /tmp/site
+          cp -a dist/. /tmp/site/
+          touch /tmp/site/.nojekyll
+          git switch --orphan gh-pages
+          git rm -rf . || true
+          cp -a /tmp/site/. .
+          git add -A
+          git commit -m "deploy: KasirIn GitHub Pages"
+          git push --force origin gh-pages
