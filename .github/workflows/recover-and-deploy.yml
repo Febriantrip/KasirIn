@@ -1,0 +1,110 @@
+name: Recover and deploy KasirIn
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  recover-build-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Recover staged source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64, lzma
+
+          root = Path('.bootstrap2')
+          prefix = ''.join((root / f'part{i:02d}.b64').read_text().strip() for i in range(7))
+          suspect = (root / 'part07.b64').read_text().strip()
+          suffix = (root / 'part08.b64').read_text().strip()
+
+          def try_candidate(text):
+              try:
+                  raw = base64.b64decode(text, validate=True)
+                  lzma.decompress(raw)
+                  return raw
+              except Exception:
+                  return None
+
+          archive = try_candidate(prefix + suspect + suffix)
+          if archive is None and len(suspect) == 20942:
+              extra = 942
+              for pos in range(len(suspect) - extra + 1):
+                  archive = try_candidate(prefix + suspect[:pos] + suspect[pos + extra:] + suffix)
+                  if archive is not None:
+                      print(f'Recovered archive by removing {extra} chars at part07 offset {pos}')
+                      break
+                  if pos and pos % 2000 == 0:
+                      print(f'Tried {pos} offsets')
+
+          if archive is None:
+              raise SystemExit('Unable to recover bootstrap archive')
+
+          Path('/tmp/kasirin.tar.xz').write_bytes(archive)
+          PY
+          mkdir -p app
+          tar -xJf /tmp/kasirin.tar.xz -C app
+          echo 'Recovered source:'
+          find app -maxdepth 2 -type f | head -40
+
+      - name: Prepare GitHub Pages build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd app
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('vite.config.ts')
+          if p.exists():
+              s = p.read_text()
+              if "base: '/KasirIn/'" not in s:
+                  s = s.replace('export default defineConfig({', "export default defineConfig({\n  base: '/KasirIn/',")
+                  p.write_text(s)
+          for f in [
+              Path('src/features/pos/shift/components/ShiftMetrics.tsx'),
+              Path('src/features/pos/shift/components/TenderBreakdown.tsx'),
+          ]:
+              if f.exists():
+                  f.unlink()
+          PY
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Build
+        working-directory: app
+        run: npx vite build
+
+      - name: Publish gh-pages branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/site
+          cp -a app/dist/. /tmp/site/
+          touch /tmp/site/.nojekyll
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --orphan gh-pages
+          git rm -rf . || true
+          cp -a /tmp/site/. .
+          git add -A
+          git commit -m "deploy: KasirIn GitHub Pages"
+          git push --force origin gh-pages
