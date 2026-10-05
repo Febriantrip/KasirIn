@@ -1,0 +1,57 @@
+name: Publish clean KasirIn source
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore clean source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .source/part*.b64 | base64 -d > /tmp/kasirin.tar.xz
+          mkdir -p /tmp/kasirin-app
+          tar -xJf /tmp/kasirin.tar.xz -C /tmp/kasirin-app
+          test -f /tmp/kasirin-app/package.json
+          test -f /tmp/kasirin-app/vite.config.ts
+          echo "KasirIn clean source restored successfully."
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: /tmp/kasirin-app/package-lock.json
+
+      - name: Verify clean source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/kasirin-app
+          npm ci
+          npm run build
+
+      - name: Publish clean source to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -a /tmp/kasirin-app/. .
+          git add -A
+          git commit -m "feat: publish KasirIn source"
+          git push origin main
